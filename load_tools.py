@@ -1,6 +1,24 @@
 import json
 import importlib, os
 
+"""
+Tools Class: Dynamically Loads and Manages AI Tools
+
+This module provides the 'Tools' class, which dynamically loads Python modules from a specified directory
+and maps functions defined in those modules to tool definitions from a JSON file.
+This allows for flexible and extensible AI tool management, where new tools can be added simply by 
+placing their Python modules in the 'tools' directory and defining them in the 'tools.json' file.
+
+The class initializes by:
+1. Loading the tool definitions from 'tools.json'.
+2. Iterating through Python files in the 'tools' directory.
+3. Dynamically importing each Python module.
+4. Matching function names within the modules to the tool names defined in 'tools.json'.
+5. Creating a mapping of tool names to their corresponding functions and definitions.
+
+The class provides methods to retrieve the function and its definition based on the tool name.
+"""
+
 
 class Tools:
     def __init__(self, tools_def_file, tools_dir):

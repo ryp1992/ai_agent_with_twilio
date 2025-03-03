@@ -271,7 +271,7 @@ async def handle_function_call(response, openai_ws, websocket, id):
         missing_prompt = f"I need some more information to book your flight. Can you provide: {', '.join(missing_params)}?"
 
         print(f"⚠️ Missing parameters: {missing_params}")
-
+        # Create new conversation item with function call id so that ai understands its continue conversation
         # Send request to OpenAI to ask user for missing details
         await openai_ws.send(json.dumps({
             "type": "conversation.item.create",
@@ -288,6 +288,10 @@ async def handle_function_call(response, openai_ws, websocket, id):
         return  # Stop execution until the user provides missing details
 
     result = await func(**arguments)
+
+    # Create new conversation item with function call id,
+    # With type as function_call_output. This will prompt ai to analyse the result.
+    # And reply appropriately to the user.
     await openai_ws.send(json.dumps({
         "type": "conversation.item.create",
         "item": {  # Add the 'item' field here
@@ -297,8 +301,12 @@ async def handle_function_call(response, openai_ws, websocket, id):
         }
     }))
 
+    # This line will force openai to send response to the user.
+    # Without this open ai will not respond result to the user.
+    # Checkout https://platform.openai.com/docs/api-reference/realtime-client-events/response for more detail.
     await openai_ws.send(json.dumps({"type": "response.create"}))
 
+    # Commit output audio to the conversation buffer.
     await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
 
 
