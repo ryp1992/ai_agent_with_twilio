@@ -9,16 +9,17 @@ from fastapi.websockets import WebSocketDisconnect
 from twilio.twiml.voice_response import VoiceResponse, Connect, Say, Stream
 from dotenv import load_dotenv
 from config import OPENAI_API_KEY, PORT
-from database import booking_collection
-import uuid
-from bson import Binary
+# from tools.book_flight import book_flight
+import load_tools
+import database
 
 load_dotenv()
 
 # Configuration
 
 SYSTEM_MESSAGE = (
-    "You are a helpful and bubbly AI assistant who loves to chat about "
+    "You are a helpful and bubbly AI assistant who loves to chat about and being an assistant who detrermines if a "
+    "function calling is required or not. "
     "anything the user is interested in and is prepared to offer them facts. "
     "You have a penchant for dad jokes, owl jokes, and rickrolling – subtly. "
     "Always stay positive, but work in a joke when appropriate."
@@ -33,7 +34,25 @@ LOG_EVENT_TYPES = [
 SHOW_TIMING_MATH = False
 
 app = FastAPI()
+tools = load_tools.tools
 
+
+async def startup_event():
+    print("Application startup: Initializing resources...")
+    # Perform startup tasks here (e.g., database connections, loading models)
+    database.connect_db()
+    print("Application startup: Resources initialized.")
+
+
+async def shutdown_event():
+    print("Application shutdown: Cleaning up resources...")
+    # Perform cleanup tasks here (e.g., closing connections, saving data)
+    database.close_db()
+    print("Application shutdown: Resources cleaned up.")
+
+
+app.add_event_handler("startup", startup_event)
+app.add_event_handler("shutdown", shutdown_event)
 if not OPENAI_API_KEY:
     raise ValueError('Missing the OpenAI API key. Please set it in the .env file.')
 
@@ -43,13 +62,15 @@ async def index_page():
     return {"message": "Twilio Media Stream Server is running!"}
 
 
-@app.api_route("/incoming-call", methods=["GET", "POST"])
+@app.post("/incoming-call")
 async def handle_incoming_call(request: Request):
+    print("I am here in handling call.")
     """Handle incoming call and return TwiML response to connect to Media Stream."""
     response = VoiceResponse()
     # <Say> punctuation to improve text-to-speech flow
     response.say(
-        "Please wait while we connect your call to the A. I. voice assistant, powered by Twilio and the Open-A.I. Realtime API")
+        "Please wait while we connect your call to the A. I. voice assistant, powered by Twilio and the Open-A.I. "
+        "Realtime API")
     response.pause(length=1)
     response.say("O.K. you can start talking!")
     host = request.url.hostname
@@ -108,6 +129,31 @@ async def handle_media_stream(websocket: WebSocket):
                 if openai_ws.open:
                     await openai_ws.close()
 
+        async def text_to_speech(text: str) -> bytes:
+            """Generates audio data from text. (Replace with a real TTS implementation)"""
+            # ... (Your TTS code here, e.g., using Google Cloud TTS, AWS Polly, etc.) ...
+            # Placeholder: Return dummy audio data
+            return b"dummy_audio_data"
+
+        async def send_error_audio(websocket: WebSocket, stream_sid: str, error_message: str):
+            """Sends an audio error message to Twilio."""
+            try:
+                # Replace this with your actual TTS implementation
+                audio_data = await text_to_speech(error_message)  # Generate audio data from the error message
+
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+
+                audio_delta = {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {
+                        "payload": audio_base64
+                    }
+                }
+                await websocket.send_json(audio_delta)
+            except Exception as tts_error:
+                print(f"Error during TTS or sending error audio: {tts_error}")
+
         async def send_to_twilio():
             """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
             nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio
@@ -140,10 +186,14 @@ async def handle_media_stream(websocket: WebSocket):
                         await send_mark(websocket, stream_sid)
 
                     # If require to perform task response should have function call
-                    if response.get('type') == 'function_call':
-                        await handle_function_call(response, openai_ws, websocket)
+                    if response.get("response") is not None and \
+                            response.get("response").get('object') == 'realtime.response':
+                        for event in response.get("response").get("output"):
+                            if event.get("type") == "function_call":
+                                await handle_function_call(event, openai_ws, websocket, event['call_id'])
 
-                    # Trigger an interruption. Your use case might work better using `input_audio_buffer.speech_stopped`, or combining the two.
+                    # Trigger an interruption. Your use case might work better using
+                    # `input_audio_buffer.speech_stopped`, or combining the two.
                     if response.get('type') == 'input_audio_buffer.speech_started':
                         print("Speech started detected.")
                         if last_assistant_item:
@@ -151,6 +201,11 @@ async def handle_media_stream(websocket: WebSocket):
                             await handle_speech_started_event()
             except Exception as e:
                 print(f"Error in send_to_twilio: {e}")
+                # await openai_ws.send(json.dumps({
+                #     "type": "conversation.item.create",
+                #     "event_id": response["event_id"],
+                #     "content": "Error occured during hadling event. Please tell user sorry."
+                # }))
 
         async def handle_speech_started_event():
             """Handle interruption when the caller's speech starts."""
@@ -196,28 +251,55 @@ async def handle_media_stream(websocket: WebSocket):
         await asyncio.gather(receive_from_twilio(), send_to_twilio())
 
 
-async def handle_function_call(response, openai_ws, websocket):
+async def handle_function_call(response, openai_ws, websocket, id):
     """Handle function calls detected by OpenAI."""
-    function_name = response['function_call']['name']
-    arguments = json.loads(response['function_call']['arguments'])
-    result = None
 
-    if function_name == "book_flight":
-        result = await book_flight(arguments['destination'], arguments['date'])
+    name = response["name"]
+    arguments = json.loads(response["arguments"])
 
-    if result:
+    print(f"Inside Handle Function call. name : {name}, args = {arguments}")
+    print(f"id : {id}")
+
+    func = tools.get_function(function_name=name)
+    params_required = tools.get_function_def(function_name=name)
+    print(params_required, type(params_required))
+    params_required = params_required.get("parameters").get("required")
+    missing_params = [param for param in params_required if param not in arguments]
+
+    if missing_params:
+        # Ask user for missing parameters
+        missing_prompt = f"I need some more information to book your flight. Can you provide: {', '.join(missing_params)}?"
+
+        print(f"⚠️ Missing parameters: {missing_params}")
+
+        # Send request to OpenAI to ask user for missing details
         await openai_ws.send(json.dumps({
-            "type": "function_response",
-            "function_call_id": response['function_call_id'],
-            "content": result
+            "type": "conversation.item.create",
+            "item": {  # Add the 'item' field here
+                "type": "function_call_output",
+                "call_id": id,
+                "output": missing_prompt
+            }
         }))
+        await openai_ws.send(json.dumps({"type": "response.create"}))
 
-        # Generate voice response for function call result
-        voice_response_event = {
-            "type": "response.audio.create",
-            "content": result
+        await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+
+        return  # Stop execution until the user provides missing details
+
+    result = await func(**arguments)
+    await openai_ws.send(json.dumps({
+        "type": "conversation.item.create",
+        "item": {  # Add the 'item' field here
+            "type": "function_call_output",
+            "call_id": id,
+            "output": result
         }
-        await openai_ws.send(json.dumps(voice_response_event))
+    }))
+
+    await openai_ws.send(json.dumps({"type": "response.create"}))
+
+    await openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
 
 
 async def send_initial_conversation_item(openai_ws):
@@ -239,32 +321,6 @@ async def send_initial_conversation_item(openai_ws):
     await openai_ws.send(json.dumps({"type": "response.create"}))
 
 
-def create_booking_uuid(passenger_name, destination, date):
-    # Combine passenger info with flight details to create a unique booking ID
-    unique_data = f"{passenger_name}_{destination}_{date}"
-
-    # Generate a UUID from the unique data (using a namespace or random method)
-    booking_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, unique_data)
-    bson_uuid = Binary.from_uuid(booking_uuid)
-    return bson_uuid
-
-
-async def book_flight(passenger_name, from_location, to_location, date):
-    booking_id = create_booking_uuid(passenger_name, destination=to_location, date=date)  # Generate a unique Booking ID
-
-    booking_val = {
-        "passenger": passenger_name,
-        "from": from_location,
-        "to": to_location,
-        "date": date,
-        "status": "Confirmed",
-        "booking_id": booking_id
-    }
-    booking_collection.insert_document(booking_val)
-    id = uuid.UUID(bytes=booking_id)
-    return f"Ticket for {passenger_name} from {from_location}, to {to_location}, on {date}, booking_id : {str(id)}"
-
-
 async def initialize_session(openai_ws):
     """Control initial session with OpenAI."""
     session_update = {
@@ -277,16 +333,8 @@ async def initialize_session(openai_ws):
             "instructions": SYSTEM_MESSAGE,
             "modalities": ["text", "audio"],
             "temperature": 0.8,
-            "functions": [{
-                "name": "book_flight",
-                "description": "Book a flight to a given destination on a specific date.",
-                "parameters": {
-                    "passenger_name": {"type": "string"},
-                    "to_location": {"type": "string"},
-                    "from_location": {"type": "string"},
-                    "date": {"type": "string"}
-                }
-            }]
+            "tools": tools.tools_defs,
+            "tool_choice": "auto",
         }
     }
     print('Sending session update:', json.dumps(session_update))

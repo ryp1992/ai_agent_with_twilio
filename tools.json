@@ -1,0 +1,62 @@
+[
+    {
+        "type": "function",
+        "name": "generate_horoscope",
+        "description": "Give today's horoscope for an astrological sign.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sign": {
+                    "type": "string",
+                    "description": "The sign for the horoscope.",
+                    "enum": [
+                        "Aries",
+                        "Taurus",
+                        "Gemini",
+                        "Cancer",
+                        "Leo",
+                        "Virgo",
+                        "Libra",
+                        "Scorpio",
+                        "Sagittarius",
+                        "Capricorn",
+                        "Aquarius",
+                        "Pisces"
+                    ]
+                }
+            },
+            "required": ["sign"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "book_flight",
+        "description": "Book a flight ticket.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "passenger_name": {
+                    "type": "string",
+                    "description": "The name of the passenger travelling."
+
+                },
+                "from_location": {
+                    "type": "string",
+                    "description": "Passenger travelling from."
+
+                },
+                "to_location": {
+                    "type": "string",
+                    "description": "Passenger travelling to."
+
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Date on which passenger is travelling."
+
+                }
+            },
+            "required": ["passenger_name","from_location","to_location","date"]
+        }
+    }
+]
